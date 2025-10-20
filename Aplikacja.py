@@ -52,8 +52,8 @@ def running_key_cipher(text, key, decrypt=False):
 class EncryptionApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Szyfrowanie plików i tekstu")
-        self.root.geometry("600x420")
+        self.root.title("Aplikacja szyfrująca")
+        self.root.geometry("600x520")
 
         ttk.Label(root, text="Aplikacja szyfrująca", font=("Arial", 18, "bold")).pack(pady=10)
 
@@ -174,4 +174,5 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = EncryptionApp(root)
     root.mainloop()
+
 
