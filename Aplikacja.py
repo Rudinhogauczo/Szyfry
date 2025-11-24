@@ -122,7 +122,7 @@ class EncryptionApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Aplikacja szyfrująca")
-        self.root.geometry("1080x800")
+        self.root.geometry("1080x900")
 
         ttk.Label(root, text="Aplikacja szyfrująca", font=("Arial", 18, "bold")).pack(pady=10)
 
@@ -346,3 +346,4 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = EncryptionApp(root)
     root.mainloop()
+
