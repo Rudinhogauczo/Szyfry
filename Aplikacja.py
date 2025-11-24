@@ -283,11 +283,10 @@ class EncryptionApp:
                     raise ValueError("Klucz musi zawierać tylko litery.")
             if alg_name == "AES":
                 if len(key.encode('utf-8')) not in (16,24,32):
-                    raise ValueError("Klucz AES musi mieć 16, 24 lub 32 bajty.")
-
+                    raise ValueError("Klucz AES musi mieć 16, 24 lub 32 bajty.")    
             if alg_name == "RSA":
                 if self.rsa_private_key is None or self.rsa_public_key is None:
-                    self.rsa_private_key, self.rsa_public_key = generate_rsa_keys()
+                    raise ValueError("Klucze RSA nie zostały wygenerowane.")
                 result = rsa_decrypt(text, self.rsa_private_key) if decrypt else rsa_encrypt(text, self.rsa_public_key)
             elif alg_name == "AES":
                 mode = self.aes_mode_var.get()
@@ -322,7 +321,7 @@ class EncryptionApp:
 
             if alg_name == "RSA":
                 if self.rsa_private_key is None or self.rsa_public_key is None:
-                    self.rsa_private_key, self.rsa_public_key = generate_rsa_keys()
+                    raise ValueError("Klucze RSA nie zostały wygenerowane.")
                 result = rsa_decrypt(data, self.rsa_private_key) if decrypt else rsa_encrypt(data, self.rsa_public_key)
             elif alg_name=="AES":
                 mode = self.aes_mode_var.get()
