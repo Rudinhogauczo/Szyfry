@@ -5,8 +5,9 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import padding as sym_padding
 import os, base64
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives.asymmetric import rsa, padding, ec
 from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from datetime import datetime
 
 def caesar_cipher(text, key, decrypt=False):
@@ -55,7 +56,14 @@ def running_key_cipher(text, key, decrypt=False):
     return result
 
 def aes_encrypt(text, key, mode="CBC", decrypt=False):
-    key_bytes = key.encode('utf-8')
+
+    if isinstance(key, str):
+        key_bytes = key.encode('utf-8')
+    elif isinstance(key, bytes):
+        key_bytes = key
+    else:
+        raise ValueError("Nieprawidłowy typ klucza AES (wymagany str lub bytes).")
+
     if len(key_bytes) not in (16, 24, 32):
         raise ValueError("Klucz AES musi mieć 16, 24 lub 32 bajty.")
 
@@ -118,19 +126,60 @@ def rsa_decrypt(text, private_key):
     )
     return decrypted.decode('utf-8')
 
+def generate_ec_keys(curve=ec.SECP384R1()):
+    priv = ec.generate_private_key(curve, backend=default_backend())
+    pub = priv.public_key()
+    return priv, pub
+
+def ec_public_bytes(public_key):
+    return public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+
+def ec_private_bytes(private_key):
+    return private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption()
+    )
+
+def load_ec_private(pem_bytes):
+    return serialization.load_pem_private_key(pem_bytes, password=None, backend=default_backend())
+
+def load_ec_public(pem_bytes):
+    return serialization.load_pem_public_key(pem_bytes, backend=default_backend())
+
+def derive_shared_key(private_key, peer_public_key, length=32):
+    shared_secret = private_key.exchange(ec.ECDH(), peer_public_key)
+    hkdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=length,
+        salt=None,
+        info=b'ecdh derived key',
+        backend=default_backend()
+    )
+    key = hkdf.derive(shared_secret)
+    return key
+
 class EncryptionApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Aplikacja szyfrująca")
-        self.root.geometry("1080x900")
+        self.root.title("Aplikacja szyfrująca (z ECDH)")
+        self.root.geometry("1080x1080")
 
         ttk.Label(root, text="Aplikacja szyfrująca", font=("Arial", 18, "bold")).pack(pady=10)
 
         self.algorithms_map = {"Cezar": caesar_cipher, "Vigenère": vigenere_cipher,
-                               "Running Key": running_key_cipher, "AES": aes_encrypt, "RSA": None}
+                               "Running Key": running_key_cipher, "AES": aes_encrypt, "RSA": None, "ECDH": None}
 
         self.rsa_private_key = None
         self.rsa_public_key = None
+
+        self.ec_private_key = None
+        self.ec_public_key = None
+        self.ec_peer_public_key = None
+        self.ec_shared_key = None 
 
         ttk.Label(root, text="Wybierz algorytm:").pack()
         self.algorithm_var = tk.StringVar(value="Cezar")
@@ -167,6 +216,16 @@ class EncryptionApp:
         ttk.Button(rsa_frame, text="Generuj klucze RSA", command=self.generate_and_set_rsa_keys).grid(row=0, column=0, padx=5)
         ttk.Button(rsa_frame, text="Zapisz klucze RSA", command=self.save_rsa_keys).grid(row=0, column=1, padx=5)
         ttk.Button(rsa_frame, text="Wczytaj klucze RSA", command=self.load_rsa_keys).grid(row=0, column=2, padx=5)
+
+        ecdh_frame = ttk.LabelFrame(root, text="ECDH (Diffie-Hellman na krzywych eliptycznych)")
+        ecdh_frame.pack(fill="x", padx=10, pady=6)
+        ttk.Button(ecdh_frame, text="Generuj klucze ECDH", command=self.generate_and_set_ec_keys).grid(row=0, column=0, padx=5, pady=4)
+        ttk.Button(ecdh_frame, text="Zapisz klucze ECDH", command=self.save_ec_keys).grid(row=0, column=1, padx=5, pady=4)
+        ttk.Button(ecdh_frame, text="Wczytaj klucze ECDH", command=self.load_ec_keys).grid(row=0, column=2, padx=5, pady=4)
+        ttk.Button(ecdh_frame, text="Zapisz klucz publiczny (do udostępnienia)", command=self.export_public_ec).grid(row=1, column=0, padx=5, pady=4)
+        ttk.Button(ecdh_frame, text="Wczytaj klucz publiczny partnera", command=self.import_peer_public_ec).grid(row=1, column=1, padx=5, pady=4)
+        ttk.Button(ecdh_frame, text="Wyprowadź wspólny sekret (HKDF)", command=self.derive_shared_secret_action).grid(row=1, column=2, padx=5, pady=4)
+        ttk.Label(ecdh_frame, text="Uwaga: wynikowy sekret (32 bajty) będzie użyty jako klucz AES przy algorytmie ECDH").grid(row=2, column=0, columnspan=3, sticky="w", padx=5, pady=4)
 
         ttk.Label(root, text="Wynik:").pack()
         self.result_box = tk.Text(root, height=7)
@@ -219,6 +278,12 @@ class EncryptionApp:
             self.hint_label.config(text="➡ Możesz wygenerować klucze, zapisać je lub wczytać z pliku.")
             self.key_entry.delete(0, tk.END)
             self.key_entry.config(validate="none")
+        elif alg == "ECDH":
+            self.key_label.config(text="ECDH: użyj przycisków aby wygenerować/wczytać klucze i wyprowadzić sekret")
+            self.hint_label.config(text="➡ Po wyprowadzeniu sekretu (HKDF) możesz szyfrować/odszyfrowywać używając ECDH (sekret jako klucz AES).")
+            self.key_entry.delete(0, tk.END)
+            self.key_entry.config(validate="none")
+            self.aes_mode_box.pack(pady=5)
 
     def validate_key_input(self, new_value):
         alg = self.algorithm_var.get()
@@ -268,6 +333,90 @@ class EncryptionApp:
         messagebox.showinfo("Sukces", "Klucze RSA wczytane pomyślnie.")
         self.add_log("RSA", "Wczytanie kluczy", "Sukces")
 
+    def generate_and_set_ec_keys(self):
+        try:
+            self.ec_private_key, self.ec_public_key = generate_ec_keys()
+            messagebox.showinfo("Sukces", "Para kluczy ECDH została wygenerowana.")
+            self.add_log("ECDH", "Generacja kluczy", "Sukces")
+        except Exception as e:
+            self.add_log("ECDH", "Generacja kluczy", "Błąd", str(e))
+            messagebox.showerror("Błąd", f"Generowanie kluczy ECDH nie powiodło się: {e}")
+
+    def save_ec_keys(self):
+        if self.ec_private_key is None or self.ec_public_key is None:
+            messagebox.showwarning("Uwaga", "Klucze ECDH nie zostały wygenerowane.")
+            return
+        priv_path = filedialog.asksaveasfilename(defaultextension=".pem", title="Zapisz klucz prywatny ECDH")
+        if not priv_path: return
+        pub_path = filedialog.asksaveasfilename(defaultextension=".pem", title="Zapisz klucz publiczny ECDH")
+        if not pub_path: return
+
+        with open(priv_path, "wb") as f:
+            f.write(ec_private_bytes(self.ec_private_key))
+        with open(pub_path, "wb") as f:
+            f.write(ec_public_bytes(self.ec_public_key))
+
+        messagebox.showinfo("Sukces", "Klucze ECDH zapisane pomyślnie.")
+        self.add_log("ECDH", "Zapis kluczy", "Sukces")
+
+    def load_ec_keys(self):
+        priv_path = filedialog.askopenfilename(title="Wybierz klucz prywatny ECDH", filetypes=[("PEM files", "*.pem")])
+        if not priv_path: return
+        pub_path = filedialog.askopenfilename(title="Wybierz klucz publiczny ECDH", filetypes=[("PEM files", "*.pem")])
+        if not pub_path: return
+        try:
+            with open(priv_path, "rb") as f:
+                self.ec_private_key = load_ec_private(f.read())
+            with open(pub_path, "rb") as f:
+                self.ec_public_key = load_ec_public(f.read())
+            messagebox.showinfo("Sukces", "Klucze ECDH wczytane pomyślnie.")
+            self.add_log("ECDH", "Wczytanie kluczy", "Sukces")
+        except Exception as e:
+            self.add_log("ECDH", "Wczytanie kluczy", "Błąd", str(e))
+            messagebox.showerror("Błąd", f"Wczytanie kluczy ECDH nie powiodło się: {e}")
+
+    def export_public_ec(self):
+        if self.ec_public_key is None:
+            messagebox.showwarning("Uwaga", "Klucz publiczny ECDH nie istnieje. Wygeneruj lub wczytaj klucze.")
+            return
+        pub_path = filedialog.asksaveasfilename(defaultextension=".pem", title="Zapisz klucz publiczny (PEM)")
+        if not pub_path: return
+        with open(pub_path, "wb") as f:
+            f.write(ec_public_bytes(self.ec_public_key))
+        messagebox.showinfo("Sukces", "Klucz publiczny zapisany do pliku.")
+        self.add_log("ECDH", "Eksport klucza publicznego", "Sukces")
+
+    def import_peer_public_ec(self):
+        pub_path = filedialog.askopenfilename(title="Wczytaj klucz publiczny partnera (PEM)", filetypes=[("PEM files", "*.pem")])
+        if not pub_path: return
+        try:
+            with open(pub_path, "rb") as f:
+                self.ec_peer_public_key = load_ec_public(f.read())
+            messagebox.showinfo("Sukces", "Klucz publiczny partnera wczytany.")
+            self.add_log("ECDH", "Import klucza partnera", "Sukces")
+        except Exception as e:
+            self.add_log("ECDH", "Import klucza partnera", "Błąd", str(e))
+            messagebox.showerror("Błąd", f"Wczytanie klucza publicznego partnera nie powiodło się: {e}")
+
+    def derive_shared_secret_action(self):
+        if self.ec_private_key is None:
+            messagebox.showwarning("Uwaga", "Brak klucza prywatnego ECDH. Wygeneruj lub wczytaj klucze.")
+            return
+        if self.ec_peer_public_key is None:
+            messagebox.showwarning("Uwaga", "Brak klucza publicznego partnera. Wczytaj klucz partnera.")
+            return
+        try:
+            self.ec_shared_key = derive_shared_key(self.ec_private_key, self.ec_peer_public_key, length=32)
+            b64 = base64.b64encode(self.ec_shared_key).decode('utf-8')
+            self.result_box.delete("1.0", tk.END)
+            self.result_box.insert(tk.END, f"Wspólny sekret (Base64, 32 bajty):\n{b64}")
+            self.add_log("ECDH", "Derivacja sekretu", "Sukces", f"Sekret: {len(self.ec_shared_key)} bajtów")
+            messagebox.showinfo("Sukces", "Wspólny sekret wyprowadzony. Możesz użyć algorytmu ECDH do AES.")
+        except Exception as e:
+            self.ec_shared_key = None
+            self.add_log("ECDH", "Derivacja sekretu", "Błąd", str(e))
+            messagebox.showerror("Błąd", f"Derivacja sekretu nie powiodła się: {e}")
+
     def process_text(self, decrypt=False):
         alg_name = self.algorithm_var.get()
         algorithm = self.algorithms_map.get(alg_name)
@@ -284,13 +433,23 @@ class EncryptionApp:
             if alg_name == "AES":
                 if len(key.encode('utf-8')) not in (16,24,32):
                     raise ValueError("Klucz AES musi mieć 16, 24 lub 32 bajty.")    
+
             if alg_name == "RSA":
                 if self.rsa_private_key is None or self.rsa_public_key is None:
                     raise ValueError("Klucze RSA nie zostały wygenerowane.")
                 result = rsa_decrypt(text, self.rsa_private_key) if decrypt else rsa_encrypt(text, self.rsa_public_key)
+
+            elif alg_name == "ECDH":
+                if self.ec_shared_key is None:
+                    raise ValueError("Wspólny sekret ECDH nie został wyprowadzony. Wygeneruj/cload klucze i zaimportuj klucz partnera.")
+                mode = self.aes_mode_var.get()
+
+                result = aes_encrypt(text, self.ec_shared_key, mode=mode, decrypt=decrypt)
+
             elif alg_name == "AES":
                 mode = self.aes_mode_var.get()
                 result = aes_encrypt(text, key, mode=mode, decrypt=decrypt)
+
             else:
                 result = algorithm(text, key, decrypt=decrypt)
 
@@ -323,9 +482,17 @@ class EncryptionApp:
                 if self.rsa_private_key is None or self.rsa_public_key is None:
                     raise ValueError("Klucze RSA nie zostały wygenerowane.")
                 result = rsa_decrypt(data, self.rsa_private_key) if decrypt else rsa_encrypt(data, self.rsa_public_key)
+
+            elif alg_name == "ECDH":
+                if self.ec_shared_key is None:
+                    raise ValueError("Wspólny sekret ECDH nie został wyprowadzony.")
+                mode = self.aes_mode_var.get()
+                result = aes_encrypt(data, self.ec_shared_key, mode=mode, decrypt=decrypt)
+
             elif alg_name=="AES":
                 mode = self.aes_mode_var.get()
                 result = aes_encrypt(data, key, mode=mode, decrypt=decrypt)
+
             else:
                 result = algorithm(data, key, decrypt=decrypt)
 
@@ -346,4 +513,3 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = EncryptionApp(root)
     root.mainloop()
-
